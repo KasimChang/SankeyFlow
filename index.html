@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FinPulse Sankey Flow Pro V2.2.4</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@300;400;500;700;900&display=swap');
+        
+        :root { 
+            --ui-font-base: clamp(11px, 0.6vw + 7pt, 15px);
+            font-size: var(--ui-font-base);
+        }
+
+        body { 
+            font-family: 'Noto Sans TC', sans-serif; 
+            user-select: none;
+            overflow-y: auto; 
+            transition: background-color 0.4s ease, color 0.4s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        .title-main {
+            font-size: 1.5rem !important;
+            font-weight: 900;
+            letter-spacing: -0.05em;
+        }
+
+        .input-text-main {
+            font-size: 11pt !important;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .sankey-link { 
+            fill: none; 
+            transition: stroke-opacity 0.3s, filter 0.3s; 
+            cursor: pointer; 
+        }
+        
+        .sankey-node rect { 
+            cursor: pointer; 
+            stroke-width: 1px;
+            transition: all 0.3s;
+        }
+        .sankey-node rect:hover { 
+            filter: brightness(1.2);
+            stroke: #fff;
+        }
+
+        .custom-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { border-radius: 10px; background: rgba(59, 130, 246, 0.2); }
+
+        @keyframes rotate-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .animate-spin-once { animation: rotate-spin 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        .tier-card { min-width: 340px; width: 85vw; }
+        @media (min-width: 640px) { .tier-card { min-width: 400px; width: auto; } }
+
+        .btn-minimal {
+            display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+            padding: 0.4rem 0.8rem; border-radius: 0.6rem; font-size: 0.65rem; font-weight: 800;
+            transition: all 0.2s; border: 1px solid transparent; text-transform: uppercase;
+        }
+        
+        .btn-action-primary { background: rgba(59, 130, 246, 0.05); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.15); }
+        .btn-action-primary:hover { background: #3b82f6; color: #fff; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
+        
+        .btn-action-danger { background: rgba(239, 68, 68, 0.05); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.15); }
+        .btn-action-danger:hover { background: #ef4444; color: #fff; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3); }
+
+        .balance-chip { padding: 0.5rem 1.5rem; border-radius: 2rem; font-size: 0.8rem; font-weight: 900; display: flex; align-items: center; gap: 0.6rem; border-width: 1px; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        .glass-card { backdrop-filter: blur(25px); }
+
+        .item-drag-source { opacity: 0.1; transform: scale(0.98); filter: blur(2px); }
+        .drop-indicator { height: 3px; background: #3b82f6; margin: 6px 0; border-radius: 3px; transition: all 0.2s; box-shadow: 0 0 15px rgba(59, 130, 246, 0.8); }
+        
+        .modal-card {
+            backdrop-filter: blur(40px);
+            box-shadow: 0 30px 80px rgba(0,0,0,0.7);
+            border: 1px solid rgba(255,255,255,0.12);
+        }
+
+        .chart-title-input {
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 1.15rem;
+            font-weight: 900;
+            /* 更新：移除 text-transform: uppercase 以支援大小寫混和 */
+            letter-spacing: -0.02em;
+            padding: 0.25rem 0.5rem;
+            width: auto;
+            min-width: 200px;
+            transition: all 0.3s;
+        }
+        .chart-title-input:focus {
+            background: rgba(59, 130, 246, 0.05);
+            border-radius: 0.5rem;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col custom-scroll">
+    <div id="root" class="flex flex-col flex-1"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef, useCallback } = React;
+
+        const APP_PALETTE = ["#3b82f6", "#6ee7b7", "#fbbf24", "#e05151", "#a78bfa", "#f472b6", "#2dd4bf", "#666161"];
+
+        const formatMoney = (val) => {
+            if (val === null || val === undefined) return "0";
+            const n = parseFloat(String(val).replace(/,/g, ''));
+            return isNaN(n) ? "0" : Math.round(n).toLocaleString('en-US');
+        };
+
+        const Icon = ({ name, className = "w-4 h-4" }) => {
+            const icons = {
+                'plus': <path d="M12 5v14M5 12h14" />,
+                'trash': <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />,
+                'layers': <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />,
+                'git-branch': <path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9" />,
+                'indent': <path d="M21 15l-3-3 3-3M3 10h11M3 6h18M3 14h11M3 18h18" />,
+                'refresh': <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />,
+                'check': <path d="M20 6L9 17l-5-5" />,
+                'x': <path d="M18 6L6 18M6 6l12 12" />,
+                'sun': <React.Fragment><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></React.Fragment>,
+                'moon': <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>,
+                'target': <React.Fragment><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="3" /></React.Fragment>,
+                'activity': <path d="M22 12h-4l-3 9L9 3l-3 9H2" />,
+                'alert-circle': <React.Fragment><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></React.Fragment>,
+                'move': <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l3-3-3-3M9 19l3 3 3-3M12 2v20M2 12h20" />,
+                'palette': <path d="M12 2.69l.64 1.28a9.12 9.12 0 0 0 8.06 5.12h.3a1 1 0 0 1 1.13c-.3 3.37-2.61 6.13-5.8 7.06a8.88 8.88 0 0 1-8.4-1.89l-2-2a9 9 0 1 1 6.2-10.7zM7 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm4-4a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm5 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2z" />,
+                'edit-3': <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />,
+                'download': <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />,
+                'github': <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
+            };
+            return (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                    {icons[name] || <circle cx="12" cy="12" r="10" />}
+                </svg>
+            );
+        };
+
+        const EXAMPLE_DIV = [
+            {
+                id: 't-revenue', name: "營收分析", isConvergence: false,
+                blocks: [{
+                    id: 'b-income', name: "收入", type: 'aggregation', color: "#3b82f6",
+                    items: [
+                        { id: 'i-p1', source: "產品收入", value: "316200", depth: 0, color: "#666161" },
+                        { id: 'i-p1-1', source: "iPhone", value: "205500", depth: 1, color: "#666161" },
+                        { id: 'i-p1-2', source: "Macbook", value: "40200", depth: 1, color: "#666161" },
+                        { id: 'i-p1-3', source: "iPad", value: "29300", depth: 1, color: "#666161" },
+                        { id: 'i-p1-4', source: "Watch & Airpods", value: "41200", depth: 1, color: "#666161" },
+                        { id: 'i-p2', source: "服務收入", value: "78200", depth: 0, color: "#666161" },
+                        { id: 'i-p2-1', source: "服務", value: "78200", depth: 1, color: "#666161" }
+                    ]
+                }]
+            },
+            {
+                id: 't-operation', name: "營運分析", isConvergence: false,
+                blocks: [
+                    {
+                        id: 'b-profit-1', name: "毛利", type: 'divergence', color: "#6ee7b7",
+                        items: [
+                            { id: 'i-op1', source: "營業利益", value: "119500", depth: 0, color: "#6ee7b7" },
+                            { id: 'i-ni', source: "淨利潤", value: "99800", depth: 1, color: "#6ee7b7" },
+                            { id: 'i-tx', source: "稅", value: "19700", depth: 1, color: "#e05151" },
+                            { id: 'i-oe', source: "營業費用", value: "51400", depth: 0, color: "#e05151" },
+                            { id: 'i-rd', source: "R&D", value: "26300", depth: 1, color: "#e05151" },
+                            { id: 'i-sga', source: "SG&A", value: "25100", depth: 1, color: "#e05151" }
+                        ]
+                    },
+                    {
+                        id: 'b-profit-2', name: "營業成本", type: 'divergence', color: "#e05151",
+                        items: [
+                            { id: 'i-cost-1', source: "產品", value: "201400", depth: 0, color: "#e05151" },
+                            { id: 'i-cost-2', source: "服務", value: "22100", depth: 0, color: "#e05151" }
+                        ]
+                    }
+                ]
+            }
+        ];
+
+        const App = () => {
+            const [tiers, setTiers] = useState(EXAMPLE_DIV); 
+            const [isDark, setIsDark] = useState(true);
+            const [refreshTrigger, setRefreshTrigger] = useState(0);
+            const [isRefreshing, setIsRefreshing] = useState(false);
+            const [draggingItem, setDraggingItem] = useState(null); 
+            const [dropIndicator, setDropIndicator] = useState(null); 
+            const [editingStyle, setEditingStyle] = useState(null); 
+            const [chartTitle, setChartTitle] = useState("Sankey 圖");
+            const svgRef = useRef(null);
+
+            const processedTiers = useMemo(() => {
+                return tiers.map((tier) => {
+                    const blocks = tier.blocks.map(block => {
+                        const items = block.items.map(i => ({ 
+                            ...i, 
+                            computedValue: parseFloat(String(i.value).replace(/,/g, '')) || 0, 
+                            hasChildren: false 
+                        }));
+                        for (let i = items.length - 1; i >= 0; i--) {
+                            if (items[i].depth > 0) {
+                                for (let j = i - 1; j >= 0; j--) {
+                                    if (items[j].depth < items[i].depth) {
+                                        if (!items[j].hasChildren) { items[j].computedValue = 0; items[j].hasChildren = true; }
+                                        items[j].computedValue += items[i].computedValue;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        return { ...block, items };
+                    });
+                    const finalizedTierTotal = blocks.reduce((acc, b) => 
+                        acc + b.items.filter(i => i.depth === 0).reduce((ai, i) => ai + i.computedValue, 0), 0
+                    );
+                    return { ...tier, blocks, tierTotal: finalizedTierTotal };
+                });
+            }, [tiers]);
+
+            const blockTotals = useMemo(() => {
+                const totals = {};
+                processedTiers.forEach(t => t.blocks.forEach(b => {
+                    totals[b.id] = b.items.filter(i => i.depth === 0).reduce((acc, i) => acc + i.computedValue, 0);
+                }));
+                return totals;
+            }, [processedTiers]);
+
+            const balanceStatus = useMemo(() => {
+                if (processedTiers.length < 2) return null;
+                const inflow = processedTiers[0].tierTotal;
+                const outflow = processedTiers[processedTiers.length - 1].tierTotal;
+                const diff = Math.abs(inflow - outflow);
+                return { isBalanced: diff < 1, diff, inflow, outflow };
+            }, [processedTiers]);
+
+            const handleManualRefresh = () => { setIsRefreshing(true); setRefreshTrigger(p => p + 1); setTimeout(() => setIsRefreshing(false), 500); };
+            const clearAllData = () => setTiers([{ id: 't-'+crypto.randomUUID(), name: "新數據畫布", isConvergence: false, blocks: [] }]);
+
+            const downloadImage = () => {
+                if (!svgRef.current) return;
+                const svg = svgRef.current;
+                const pixelRatio = 3; 
+                const serializer = new XMLSerializer();
+                const source = serializer.serializeToString(svg);
+                const canvas = document.createElement("canvas");
+                const context = canvas.getContext("2d");
+                const svgWidth = svg.clientWidth;
+                const svgHeight = svg.clientHeight;
+                const titleOffset = 80;
+                canvas.width = svgWidth * pixelRatio;
+                canvas.height = (svgHeight + titleOffset) * pixelRatio;
+                context.scale(pixelRatio, pixelRatio);
+                context.fillStyle = isDark ? "#05070a" : "#f8fafc";
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.fillStyle = isDark ? "#e2e8f0" : "#0f172a";
+                context.font = "bold 24px Noto Sans TC, sans-serif";
+                context.textAlign = "left";
+                // 更新：移除 .toUpperCase() 轉換，支援混合大小寫
+                context.fillText(chartTitle, 40, 50);
+                const img = new Image();
+                const encodedSvg = btoa(unescape(encodeURIComponent(source.replace(/<svg/, `<svg width="${svgWidth}" height="${svgHeight}"`))));
+                const url = `data:image/svg+xml;base64,${encodedSvg}`;
+                img.onload = () => {
+                    context.drawImage(img, 0, titleOffset);
+                    const pngUrl = canvas.toDataURL("image/png", 1.0);
+                    const downloadLink = document.createElement("a");
+                    downloadLink.href = pngUrl;
+                    downloadLink.download = `${chartTitle}_3x.png`;
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    document.body.removeChild(downloadLink);
+                };
+                img.src = url;
+            };
+
+            const updateItemValue = (tid, bid, iid, rawVal) => {
+                const val = rawVal.replace(/[^0-9.]/g, '');
+                setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.map(b => b.id === bid ? { ...b, items: b.items.map(i => i.id === iid ? { ...i, value: val } : i) } : b) } : t));
+            };
+
+            const updateItemSource = (tid, bid, iid, val) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.map(b => b.id === bid ? { ...b, items: b.items.map(i => i.id === iid ? { ...i, source: val } : i) } : b) } : t));
+            const toggleBlockType = (tid, bid) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.map(b => b.id === bid ? { ...b, type: b.type === 'aggregation' ? 'divergence' : 'aggregation' } : b) } : t));
+            const cycleDepth = (tid, bid, iid) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.map(b => b.id === bid ? { ...b, items: b.items.map(i => i.id === iid ? { ...i, depth: ((i.depth || 0) + 1) % 3 } : i) } : b) } : t));
+            const addItem = (tid, bid) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.map(b => b.id === bid ? { ...b, items: [...b.items, { id: 'i'+crypto.randomUUID(), source: "", value: "1000", depth: 0, color: null }] } : b) } : t));
+            const addBlock = (tid) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: [...t.blocks, { id: 'b'+crypto.randomUUID(), name: "新區塊", type: 'aggregation', items: [], color: "#3b82f6" }] } : t));
+            const deleteBlock = (tid, bid) => setTiers(prev => prev.map(t => t.id === tid ? { ...t, blocks: t.blocks.filter(b => b.id !== bid) } : t));
+            const addTier = () => setTiers(p => [...p, { id: 't'+crypto.randomUUID(), name: "新增階段", isConvergence: false, blocks: [] }]);
+            const deleteTier = (tid) => setTiers(p => p.filter(t => t.id !== tid));
+            
+            const commitStyle = () => {
+                if (!editingStyle) return;
+                const { type, id, color, opacity, name, tierId, blockId } = editingStyle;
+                setTiers(prev => prev.map(t => t.id === tierId ? {
+                    ...t, blocks: t.blocks.map(b => {
+                        if (type === 'block' && b.id === id) return { ...b, color, name };
+                        if (type === 'item' && b.id === blockId) return { ...b, items: b.items.map(i => i.id === id ? { ...i, color, opacity, source: name } : i) };
+                        return b;
+                    })
+                } : t));
+                setEditingStyle(null);
+            };
+
+            const onDragStart = (tid, bid, item, index) => setDraggingItem({ tid, bid, item, index });
+            const onDragOverItem = (e, bid, index) => {
+                e.preventDefault(); e.stopPropagation();
+                const rect = e.currentTarget.getBoundingClientRect();
+                const mid = rect.top + rect.height / 2;
+                const finalIndex = e.clientY > mid ? index + 1 : index;
+                setDropIndicator({ blockId: bid, index: finalIndex });
+            };
+            const onDragOverBlock = (e, bid) => {
+                e.preventDefault();
+                if (!dropIndicator || dropIndicator.blockId !== bid) setDropIndicator({ blockId: bid, index: 0 });
+            };
+            const onDrop = (toTid, toBid) => {
+                if (!draggingItem || !dropIndicator) { setDraggingItem(null); setDropIndicator(null); return; }
+                const { tid: fromTid, bid: fromBid, item, index: fromIndex } = draggingItem;
+                const toIndex = dropIndicator.index;
+                setTiers(prev => {
+                    const newTiers = JSON.parse(JSON.stringify(prev));
+                    const fromBlock = newTiers.find(t => t.id === fromTid).blocks.find(b => b.id === fromBid);
+                    fromBlock.items.splice(fromIndex, 1);
+                    const toBlock = newTiers.find(t => t.id === toTid).blocks.find(b => b.id === toBid);
+                    let finalInsertIndex = toIndex;
+                    if (fromBid === toBid && fromIndex < toIndex) finalInsertIndex = Math.max(0, toIndex - 1);
+                    toBlock.items.splice(finalInsertIndex, 0, item);
+                    return newTiers;
+                });
+                setDraggingItem(null); setDropIndicator(null);
+            };
+
+            const renderSankey = useCallback(() => {
+                if (!svgRef.current) return;
+                const container = svgRef.current.parentElement;
+                const width = container.clientWidth, height = container.clientHeight;
+                const svg = d3.select(svgRef.current);
+                svg.selectAll("*").remove();
+                const nodes = []; const links = [];
+                const xStep = 5; 
+
+                processedTiers.forEach((tier, tIdx) => {
+                    const tierDefaultColor = APP_PALETTE[tIdx % APP_PALETTE.length];
+                    tier.blocks.forEach(block => {
+                        const isDiv = block.type === 'divergence';
+                        const bColor = block.color || tierDefaultColor;
+                        const blockDepthOffset = isDiv ? 0 : (xStep - 1);
+                        nodes.push({ id: block.id, name: block.name, color: bColor, depth: (tIdx * xStep) + blockDepthOffset, type: 'block', tierId: tier.id });
+                        let parentMap = { 0: block.id, 1: null, 2: null };
+                        block.items.forEach(item => {
+                            const itemId = `i-${item.id}`;
+                            const val = Math.max(0.1, item.computedValue);
+                            let nodeDepth = isDiv ? (tIdx * xStep) + item.depth + 1 : (tIdx * xStep) + (xStep - 2 - item.depth);
+                            const itemColor = item.color || (isDark ? "#475569" : "#94a3b8");
+                            const nodeOpacity = item.opacity || 1;
+                            nodes.push({ id: itemId, name: item.source, color: itemColor, depth: nodeDepth, type: 'item', tierId: tier.id, blockId: block.id, itemId: item.id, opacity: nodeOpacity });
+                            if (item.depth === 0) {
+                                parentMap[1] = itemId;
+                                if (isDiv) links.push({ source: block.id, target: itemId, value: val, color: itemColor, opacity: nodeOpacity });
+                                else links.push({ source: itemId, target: block.id, value: val, color: itemColor, opacity: nodeOpacity });
+                            } else {
+                                const parentId = parentMap[item.depth];
+                                if (parentId) {
+                                    if (isDiv) links.push({ source: parentId, target: itemId, value: val, color: itemColor, opacity: nodeOpacity });
+                                    else links.push({ source: itemId, target: parentId, value: val, color: itemColor, opacity: nodeOpacity });
+                                }
+                                parentMap[item.depth + 1] = itemId;
+                            }
+                        });
+                        if (tIdx < processedTiers.length - 1) {
+                            processedTiers[tIdx+1].blocks.forEach(nb => {
+                                const flow = blockTotals[nb.id] * (blockTotals[block.id] / (tier.tierTotal || 1)); 
+                                if (flow > 0.05) links.push({ source: block.id, target: nb.id, value: flow, color: bColor, opacity: 0.2 });
+                            });
+                        }
+                    });
+                });
+                if (nodes.length === 0) return;
+                const sankey = d3.sankey().nodeId(d => d.id).nodeWidth(16).nodePadding(30).extent([[80, 40], [width - 80, height - 40]]);
+                const graph = sankey({ nodes: nodes.map(d => Object.assign({}, d)), links: links.map(d => Object.assign({}, d)) });
+                
+                svg.append("g").selectAll("path").data(graph.links).join("path")
+                    .attr("class", "sankey-link").attr("d", d3.sankeyLinkHorizontal())
+                    .attr("stroke", d => d.color).attr("stroke-opacity", d => (d.opacity || 1) * (isDark ? 0.2 : 0.3)).attr("stroke-width", d => Math.max(1, d.width));
+                
+                const node = svg.append("g").selectAll("g").data(graph.nodes).join("g").attr("class", "sankey-node")
+                    .on("click", (event, d) => { 
+                        setEditingStyle({ type: d.type, id: d.type === 'item' ? d.itemId : d.id, tierId: d.tierId, blockId: d.blockId, color: d.color, opacity: d.opacity || 1, name: d.name }); 
+                    });
+                node.append("rect").attr("x", d => d.x0).attr("y", d => d.y0).attr("height", d => Math.max(4, d.y1 - d.y0)).attr("width", d => d.x1 - d.x0).attr("fill", d => d.color).attr("fill-opacity", d => d.opacity || 1).attr("rx", 6);
+                node.append("text").attr("x", d => d.x0 < width/2 ? d.x1 + 12 : d.x0 - 12).attr("y", d => (d.y1 + d.y0)/2).attr("dy", "0.35em").attr("text-anchor", d => d.x0 < width/2 ? "start" : "end").attr("fill", isDark ? "#f8fafc" : "#0f172a").style("font-size", "10px").style("font-weight", "800").text(d => `${d.name} ${formatMoney(d.value)}`);
+            }, [processedTiers, blockTotals, isDark]);
+
+            useEffect(() => { 
+                const timer = setTimeout(renderSankey, 100); 
+                window.addEventListener('resize', renderSankey); 
+                return () => { clearTimeout(timer); window.removeEventListener('resize', renderSankey); }; 
+            }, [renderSankey, refreshTrigger, tiers]);
+
+            return (
+                <div class={`flex flex-col min-h-screen transition-colors duration-500 ${isDark ? 'bg-[#05070a] text-[#e2e8f0]' : 'bg-slate-50 text-slate-900'}`}>
+                    <header class={`sticky top-0 h-20 border-b flex items-center justify-between px-8 backdrop-blur-2xl z-50 ${isDark ? 'border-white/5 bg-[#0d111c]/80' : 'border-slate-200 bg-white/80 shadow-sm'}`}>
+                        <div class="flex items-center gap-5">
+                            <div class="bg-blue-600 p-2.5 rounded-xl shadow-lg shadow-blue-500/30"><Icon name="layers" className="w-6 h-6 text-white" /></div>
+                            <div class="flex flex-col">
+                                <h1 class="font-black title-main leading-tight tracking-tight">FinPulse <span class="text-blue-500 italic">Sankey Flow Pro</span></h1>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-6">
+                            {balanceStatus && (
+                                <div className={`balance-chip ${balanceStatus.isBalanced ? (isDark ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.1)]' : 'bg-emerald-50 border-emerald-200 text-emerald-600') : (isDark ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-amber-50 border-amber-200 text-amber-600')}`}>
+                                    <Icon name={balanceStatus.isBalanced ? "check" : "alert-circle"} className="w-5 h-5" />
+                                    <span className="mono font-black tracking-tighter uppercase">{balanceStatus.isBalanced ? "數據流平衡" : `數據流未平衡: $${formatMoney(balanceStatus.diff)}`}</span>
+                                </div>
+                            )}
+                            <div className="h-8 w-px bg-white/10"></div>
+                            <div class="flex items-center gap-2">
+                                <button onClick={() => setTiers(EXAMPLE_DIV)} className="btn-minimal btn-action-primary px-3 py-2"><Icon name="activity" /> 載入分析範例</button>
+                                <button onClick={clearAllData} className="btn-minimal btn-action-danger px-3 py-2"><Icon name="trash" /> 清空面板</button>
+                                <button onClick={() => setIsDark(!isDark)} class={`p-2.5 rounded-xl transition-all ${isDark ? 'bg-white/5 text-yellow-400 shadow-inner' : 'bg-slate-100 text-slate-600'}`}>
+                                    <Icon name={isDark ? "sun" : "moon"} className="w-6 h-6" />
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-8 space-y-12">
+                        <section className="flex flex-col gap-4">
+                            <h2 className="text-xl font-black uppercase flex items-center gap-3">
+                                <span className="w-2 h-8 bg-blue-600 rounded-full"></span>
+                                Sankey 數據
+                            </h2>
+                            <div class="flex items-start gap-6 overflow-x-auto pb-6 custom-scroll">
+                                {processedTiers.map(tier => (
+                                    <div key={tier.id} class={`tier-card p-5 rounded-[2.2rem] border shrink-0 glass-card transition-all ${isDark ? 'bg-[#0d111c]/70 border-white/5 shadow-2xl' : 'bg-white/70 border-slate-200 shadow-sm'}`}>
+                                        <div class="flex items-center justify-between mb-5 px-1">
+                                            <input value={tier.name} onChange={e => setTiers(tiers.map(t => t.id === tier.id ? {...t, name: e.target.value} : t))} class={`bg-transparent font-black text-xs uppercase outline-none focus:text-blue-500 transition-colors ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
+                                            <div className="flex items-center gap-3">
+                                                <span class="mono text-xs opacity-40 font-black">${Math.round(tier.tierTotal).toLocaleString()}</span>
+                                                <button onClick={() => deleteTier(tier.id)} className="p-1 text-slate-500 hover:text-red-500 transition-colors"><Icon name="trash" className="w-4 h-4" /></button>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-5">
+                                            {tier.blocks.map(block => (
+                                                <div key={block.id} 
+                                                    onDragOver={(e) => onDragOverBlock(e, block.id)}
+                                                    onDrop={() => onDrop(tier.id, block.id)}
+                                                    onDragLeave={() => setDropIndicator(null)}
+                                                    class={`rounded-[1.8rem] p-5 border transition-all relative ${isDark ? 'bg-black/20 border-white/5' : 'bg-slate-50 border-slate-200 shadow-sm'}`}
+                                                >
+                                                    <div class="flex items-center gap-3 mb-4 group/block-header">
+                                                        <button onClick={() => toggleBlockType(tier.id, block.id)} className={`p-2 rounded-xl transition-all ${block.type === 'divergence' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                                                            <Icon name={block.type === 'divergence' ? "git-branch" : "layers"} className="w-4 h-4" />
+                                                        </button>
+                                                        <input value={block.name} onChange={e => setTiers(tiers.map(t => t.id === tier.id ? {...t, blocks: t.blocks.map(b => b.id === block.id ? {...b, name: e.target.value} : b)} : t))} class="bg-transparent font-black outline-none w-32 input-text-main" />
+                                                        <span class="ml-auto mono text-[0.7rem] font-black text-blue-500/80">${Math.round(blockTotals[block.id]).toLocaleString()}</span>
+                                                        <button onClick={() => deleteBlock(tier.id, block.id)} className="p-1 opacity-0 group-hover/block-header:opacity-100 transition-opacity text-red-500/50 hover:text-red-500"><Icon name="trash" className="w-4 h-4"/></button>
+                                                    </div>
+                                                    
+                                                    <div class="space-y-2 relative">
+                                                        {block.items.map((item, idx) => (
+                                                            <React.Fragment key={item.id}>
+                                                                {dropIndicator && dropIndicator.blockId === block.id && dropIndicator.index === idx && (
+                                                                    <div className="drop-indicator animate-pulse"></div>
+                                                                )}
+                                                                <div 
+                                                                    draggable="true" 
+                                                                    onDragStart={() => onDragStart(tier.id, block.id, item, idx)}
+                                                                    onDragOver={(e) => onDragOverItem(e, block.id, idx)}
+                                                                    class={`item-container flex items-center gap-2 group/item ${draggingItem?.item.id === item.id ? 'item-drag-source' : ''} ${item.depth === 1 ? 'ml-5' : item.depth === 2 ? 'ml-10' : ''}`}
+                                                                >
+                                                                    <div class={`flex-1 flex gap-2 dense-item-row rounded-2xl border relative cursor-grab active:cursor-grabbing transition-all hover:shadow-lg ${isDark ? 'bg-white/5 border-white/5 shadow-sm' : 'bg-white border-slate-200 shadow-sm'}`}>
+                                                                        <div className="absolute left-[-15px] opacity-0 group-hover/item:opacity-100 transition-opacity text-blue-500 pointer-events-none"><Icon name="move" className="w-3.5 h-3.5"/></div>
+                                                                        <button 
+                                                                            onClick={() => cycleDepth(tier.id, block.id, item.id)} 
+                                                                            className={`p-1.5 rounded-lg transition-colors ${item.depth === 0 ? 'text-emerald-400 bg-emerald-400/10' : item.depth === 1 ? 'text-amber-400 bg-amber-400/10' : 'text-rose-500 bg-rose-500/10'}`}
+                                                                        >
+                                                                            <Icon name="indent" className="w-3.5 h-3.5"/>
+                                                                        </button>
+                                                                        <input value={item.source} onChange={e => updateItemSource(tier.id, block.id, item.id, e.target.value)} class="bg-transparent font-bold outline-none flex-1 truncate input-text-main" placeholder="項目名稱..." />
+                                                                        <div className="flex items-center px-2 bg-black/10 rounded-lg border border-white/5">
+                                                                            <input 
+                                                                                readOnly={item.hasChildren} 
+                                                                                value={item.hasChildren ? formatMoney(item.computedValue) : formatMoney(item.value)} 
+                                                                                onChange={e => updateItemValue(tier.id, block.id, item.id, e.target.value)} 
+                                                                                class={`bg-transparent font-black mono text-right outline-none w-28 input-text-main ${item.hasChildren ? 'text-blue-400' : (isDark ? 'text-white' : 'text-slate-800')}`} 
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                    <button onClick={() => setTiers(prev => prev.map(t => t.id === tier.id ? {...t, blocks: t.blocks.map(b => b.id === block.id ? {...b, items: b.items.filter(it => it.id !== item.id)} : b)} : t))} className="p-1.5 opacity-0 group-hover/item:opacity-40 hover:!opacity-100 text-red-500 transition-opacity"><Icon name="trash" className="w-4 h-4"/></button>
+                                                                </div>
+                                                            </React.Fragment>
+                                                        ))}
+                                                        {dropIndicator && dropIndicator.blockId === block.id && dropIndicator.index === block.items.length && (
+                                                            <div className="drop-indicator animate-pulse"></div>
+                                                        )}
+                                                        <button onClick={() => addItem(tier.id, block.id)} class="btn-minimal w-full opacity-30 hover:opacity-100 hover:bg-blue-500/10 text-blue-400 transition-all mt-3"><Icon name="plus" className="w-3.5 h-3.5"/> 新增項目</button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            <button onClick={() => addBlock(tier.id)} class="btn-minimal w-full opacity-30 hover:opacity-100 border-dashed border-white/10 transition-all py-3"><Icon name="plus" className="w-4 h-4"/> 新增區塊</button>
+                                        </div>
+                                    </div>
+                                ))}
+                                <div class="min-w-[150px] flex flex-col gap-4 py-2">
+                                    <button onClick={addTier} class="btn-minimal flex-col min-h-[120px] border-2 border-dashed border-white/5 opacity-30 hover:opacity-100 hover:bg-blue-500/5 text-blue-400 transition-all rounded-[2rem]">
+                                        <Icon name="plus" className="w-7 h-7 mb-2" />
+                                        <span className="text-[0.65rem] tracking-[0.2em] font-black">新增階段</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className="flex flex-col gap-6 relative">
+                            <div className="flex items-center justify-end gap-3 px-4">
+                                <button onClick={handleManualRefresh} className={`p-3 rounded-2xl transition-all shadow-xl ${isDark ? 'bg-blue-600/20 text-blue-400 border border-blue-500/20 hover:bg-blue-600/30' : 'bg-blue-50 text-blue-600 border-blue-200'}`}>
+                                    <div className="flex items-center gap-3">
+                                        <Icon name="refresh" className={`w-5 h-5 ${isRefreshing ? 'animate-spin-once' : ''}`} />
+                                        <span className="text-[0.7rem] font-black uppercase tracking-[0.2em]">圖片刷新</span>
+                                    </div>
+                                </button>
+                                <button onClick={downloadImage} className={`p-3 rounded-2xl transition-all shadow-xl ${isDark ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-600/30' : 'bg-emerald-50 text-emerald-600 border-emerald-200'}`}>
+                                    <div className="flex items-center gap-3">
+                                        <Icon name="download" className="w-5 h-5" />
+                                        <span className="text-[0.7rem] font-black uppercase tracking-[0.2em]">下載圖片</span>
+                                    </div>
+                                </button>
+                            </div>
+
+                            <div class={`p-12 rounded-[4rem] border transition-all relative ${isDark ? 'bg-[#0d111c]/40 border-white/5 shadow-2xl' : 'bg-white border-slate-200 shadow-xl'}`}>
+                                <div className="absolute top-10 left-12 flex items-center gap-3 z-10">
+                                    <span className="w-2 h-7 bg-emerald-500 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.5)]"></span>
+                                    <input 
+                                        value={chartTitle} 
+                                        onChange={(e) => setChartTitle(e.target.value)}
+                                        className={`chart-title-input ${isDark ? 'text-white' : 'text-slate-900'} !text-xl !font-black`}
+                                        placeholder="請輸入圖表標題..."
+                                    />
+                                </div>
+                                
+                                <div className="w-full h-[650px] relative pt-16">
+                                    <svg ref={svgRef} class="w-full h-full drop-shadow-2xl overflow-visible"></svg>
+                                </div>
+                            </div>
+                        </section>
+                    </main>
+
+                    {editingStyle && (
+                        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-300">
+                            <div className={`w-full max-w-sm rounded-[2.5rem] p-8 modal-card transition-all transform scale-100 ${isDark ? 'bg-[#161b29] text-white border-white/10' : 'bg-white text-slate-900 border-slate-200'}`}>
+                                <div className="flex justify-between items-center mb-8 border-b border-white/5 pb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2.5 rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-500/30"><Icon name="palette" className="w-5 h-5" /></div>
+                                        <div className="flex flex-col">
+                                            <span className="text-[0.6rem] font-black uppercase text-blue-500 tracking-widest">Visual Editor</span>
+                                            <h2 className="text-sm font-bold tracking-tight opacity-40 italic">客製化節點外觀</h2>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setEditingStyle(null)} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-full transition-all"><Icon name="x" className="w-5 h-5" /></button>
+                                </div>
+                                <div className="space-y-8">
+                                    <div className="space-y-3">
+                                        <div className="flex items-center gap-2 px-1">
+                                            <Icon name="edit-3" className="w-3.5 h-3.5 text-blue-500 opacity-60" />
+                                            <label className="text-[0.65rem] font-black uppercase tracking-widest opacity-50">Label Sync</label>
+                                        </div>
+                                        <input type="text" value={editingStyle.name} onChange={e => setEditingStyle({...editingStyle, name: e.target.value})} className={`w-full px-4 py-3 rounded-2xl border font-bold ${isDark ? 'bg-black/40 border-white/10 focus:border-blue-500' : 'bg-slate-50 border-slate-200 focus:border-blue-500'} outline-none transition-all placeholder:font-normal`} placeholder="請輸入名稱..." />
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div className="flex items-center gap-2 px-1">
+                                            <Icon name="palette" className="w-3.5 h-3.5 text-blue-500 opacity-60" />
+                                            <label className="text-[0.65rem] font-black uppercase tracking-widest opacity-50">Style Accent</label>
+                                        </div>
+                                        <div className="flex items-center gap-4 bg-black/5 p-4 rounded-[1.8rem] border border-white/5">
+                                            <input type="color" value={editingStyle.color || "#3b82f6"} onChange={e => setEditingStyle({...editingStyle, color: e.target.value})} className="w-14 h-14 rounded-2xl bg-transparent cursor-pointer border-none shadow-xl" />
+                                            <div className="flex-1 flex flex-wrap gap-2.5">
+                                                {APP_PALETTE.map(c => (
+                                                    <button key={c} onClick={() => setEditingStyle({...editingStyle, color: c})} className={`w-6 h-6 rounded-full border-2 border-white/10 transition-all hover:scale-125 ${editingStyle.color === c ? 'ring-2 ring-blue-500 ring-offset-4 ring-offset-slate-900' : ''}`} style={{ backgroundColor: c }} />
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {editingStyle.type === 'item' && (
+                                        <div className="space-y-4">
+                                            <div className="flex justify-between items-center px-1">
+                                                <div className="flex items-center gap-2">
+                                                    <Icon name="sun" className="w-3.5 h-3.5 text-blue-500 opacity-60" />
+                                                    <label className="text-[0.65rem] font-black uppercase tracking-widest opacity-50">Opacity</label>
+                                                </div>
+                                                <span className="mono text-[0.7rem] font-black text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{Math.round(editingStyle.opacity * 100)}%</span>
+                                            </div>
+                                            <input type="range" min="0.1" max="1" step="0.1" value={editingStyle.opacity} onChange={e => setEditingStyle({...editingStyle, opacity: parseFloat(e.target.value)})} className="w-full accent-blue-500 h-1.5 bg-blue-500/10 rounded-lg appearance-none cursor-pointer" />
+                                        </div>
+                                    )}
+                                    <div className="flex gap-4 pt-4">
+                                        <button onClick={() => setEditingStyle(null)} className={`flex-1 py-4 rounded-2xl font-black text-[0.7rem] uppercase tracking-widest transition-all ${isDark ? 'bg-white/5 text-slate-400' : 'bg-slate-100 text-slate-600'}`}>Discard</button>
+                                        <button onClick={commitStyle} className="flex-1 py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-[0.7rem] uppercase tracking-widest shadow-xl shadow-blue-600/30 transition-all">Confirm</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="py-8 border-t mt-auto transition-colors duration-300 bg-white border-slate-200 text-slate-500 dark:bg-slate-900/50 dark:border-slate-800 dark:text-slate-400">
+                        <div className="max-w-[1650px] mx-auto px-8 flex flex-col md:flex-row justify-between items-center gap-6">
+                            <div className="flex flex-col md:flex-row items-center gap-4 md:gap-8">
+                                <a href="https://github.com/kasimchang" target="_blank" className="group flex items-center gap-3">
+                                    <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-full group-hover:bg-blue-500 group-hover:text-white transition-all">
+                                        <Icon name="github" className="w-4 h-4" />
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-[10px] uppercase font-black tracking-widest opacity-60">Created by</span>
+                                        <span className="text-sm font-bold tracking-tight text-slate-700 dark:text-slate-300">kasimchang</span>
+                                    </div>
+                                </a>
+                                <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] uppercase font-black tracking-widest opacity-60">Copyright</span>
+                                    <span className="text-sm font-bold tracking-tight italic">© 2026 FinPulse Sankey Flow Pro</span>
+                                </div>
+                            </div>
+                            <div className="text-right flex flex-col items-end">
+                                <span className="text-[10px] uppercase font-black tracking-[0.3em] text-blue-500/80 mb-1">Precision Finance</span>
+                                <p className="text-[11px] font-medium opacity-60">專為複雜財務結構設計的層級拆解引擎</p>
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
